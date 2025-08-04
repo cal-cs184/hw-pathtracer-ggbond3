@@ -63,6 +63,10 @@ class ColladaParser {
  	// the given xml entry point
  	static XMLElement* get_technique_CGL( XMLElement* xml );
 
+	// Get entry point to the blender profile section for the Collada object with
+ 	// the given xml entry point
+	static XMLElement* get_technique_blender( XMLElement* xml );
+
   static void parse_node (XMLElement* xml);
   static void parse_camera	 ( XMLElement* xml, CameraInfo& 	camera	 );
   static void parse_light		 ( XMLElement* xml, LightInfo& 		light		 );

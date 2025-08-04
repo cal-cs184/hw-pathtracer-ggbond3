@@ -12,7 +12,7 @@
 
 #include "pathtracer/bsdf.h"
 
-#define stat(s) // cerr << "[COLLADA Parser] " << s << endl;
+#define stat(s) cerr << "[COLLADA Parser] " << s << endl;
 
 using namespace std;
 
@@ -140,6 +140,18 @@ XMLElement* ColladaParser::get_technique_CGL( XMLElement* xml ) {
 
 }
 
+XMLElement* ColladaParser::get_technique_blender( XMLElement* xml ) {
+
+  XMLElement* technique = get_element(xml, "extra/technique");
+  while (technique) {
+    string profile = technique->Attribute("profile");
+    if (profile == "blender") return technique;
+    technique = technique->NextSiblingElement("technique");
+  }
+
+  return NULL;
+
+}
 
 int ColladaParser::load( const char* filename, SceneInfo* sceneInfo ) {
 
@@ -495,28 +507,19 @@ void ColladaParser::parse_light( XMLElement* xml, LightInfo& light ) {
   XMLElement* technique = NULL;
   XMLElement* technique_common = get_technique_common(xml);
   XMLElement* technique_CGL = get_technique_CGL(xml);
-  technique = technique_CGL ? technique_CGL : technique_common;
-  // or, get blender technique 
-  XMLElement* technique_blender = get_element(xml, "extra/technique");
-  if ((string) technique_blender->Attribute("profile") == "blender") {
-    // technique = technique_blender;
-    light.light_type = LightType::AREA;
-    // spot = 6291457
-    float energy = value_from_string(get_element(xml, "extra/technique/energy")->GetText());
-    light.spectrum = Vector3D(
-      value_from_string(get_element(xml, "extra/technique/red")->GetText()) * energy,
-      value_from_string(get_element(xml, "extra/technique/green")->GetText()) * energy,
-      value_from_string(get_element(xml, "extra/technique/blue")->GetText()) * energy
-    );
+  XMLElement* technique_blender = get_technique_blender(xml);
 
-    // print summary
-    stat("  |- " << light);
-    return;
-    // return;
+  // use blender profile as last resort
+  if (technique_blender) {
+    technique = technique_blender;
+  }
+  if (technique_common) {
+    technique = technique_common;
+  }
+  if (technique_CGL) {
+    technique = technique_CGL;
   }
 
-
-  
   if (!technique) {
     stat("Error: No supported profile defined in light: " << light.id);
     exit(EXIT_FAILURE);
@@ -530,81 +533,72 @@ void ColladaParser::parse_light( XMLElement* xml, LightInfo& light ) {
     // type
     string type = e_light->Name();
 
-    // type-specific parameters
+    // attributes
+    XMLElement* e_color = get_element(e_light, "color");
+
+    XMLElement* e_energy = get_element(e_light, "energy");
+    XMLElement* e_red = get_element(e_light, "red");
+    XMLElement* e_green = get_element(e_light, "green");
+    XMLElement* e_blue = get_element(e_light, "blue");
+
+    // by default, use these attributes
+    if (e_color) {
+      string color_string = e_color->GetText();
+      light.spectrum = spectrum_from_string( color_string );
+    } else if (e_energy && e_red && e_green && e_blue) {
+      float energy = value_from_string(e_energy->GetText());
+      light.spectrum = Vector3D(
+        value_from_string(e_red->GetText()) * energy,
+        value_from_string(e_green->GetText()) * energy,
+        value_from_string(e_blue->GetText()) * energy
+      ); 
+    } else {
+      stat("Error: improper attribute definition in light: " << light.id);
+      exit(EXIT_FAILURE);
+    }
+
+    // type-specific parameters and overrides
     if (type == "ambient") {
       light.light_type = LightType::AMBIENT;
-      XMLElement* e_color = get_element(e_light, "color");
-      if (e_color) {
-        string color_string = e_color->GetText();
-        light.spectrum = spectrum_from_string( color_string );
-      } else {
-        stat("Error: No color definition in ambient light: " << light.id);
-        exit(EXIT_FAILURE);
-      }
     } else if (type == "directional") {
       light.light_type = LightType::DIRECTIONAL;
-      XMLElement* e_color = get_element(e_light, "color");
-      if (e_color) {
-        string color_string = e_color->GetText();
-        light.spectrum = spectrum_from_string( color_string );
-      } else {
-        stat("Error: No color definition in directional light: " << light.id);
-        exit(EXIT_FAILURE);
-      }
     } else if (type == "area") {
       light.light_type = LightType::AREA;
-      XMLElement* e_color = get_element(e_light, "color");
-      if (e_color) {
-        string color_string = e_color->GetText();
-        light.spectrum = spectrum_from_string( color_string );
-      } else {
-        stat("Error: No color definition in area light: " << light.id);
-        exit(EXIT_FAILURE);
-      }
     } else if (type == "point") {
-      
       light.light_type = LightType::POINT;
-      XMLElement* e_color = get_element(e_light, "color");
       XMLElement* e_constant_att = get_element(e_light, "constant_attenuation");
       XMLElement* e_linear_att = get_element(e_light, "linear_attenuation");
       XMLElement* e_quadratic_att = get_element(e_light, "quadratic_attenuation");
-      if (e_color && e_constant_att && e_linear_att && e_quadratic_att) {
-        string color_string = e_color->GetText();
-        light.spectrum = spectrum_from_string( color_string );
+      if (e_constant_att && e_linear_att && e_quadratic_att) {
         light.constant_att = atof(e_constant_att->GetText());
-        light.constant_att = atof(e_linear_att->GetText());
-        light.constant_att = atof(e_quadratic_att->GetText());
-        
+        light.linear_att = atof(e_linear_att->GetText());
+        light.quadratic_att = atof(e_quadratic_att->GetText());
       } else {
-        stat("Error: incomplete definition of point light: " << light.id);
+        stat("Error: No attenuation, linear, quadratic definitions in point light: " << light.id);
         exit(EXIT_FAILURE);
       }
     } else if (type == "spot") {
       light.light_type = LightType::SPOT;
-      XMLElement* e_color = get_element(e_light, "color");
       XMLElement* e_falloff_deg = e_light->FirstChildElement("falloff_angle");
       XMLElement* e_falloff_exp = e_light->FirstChildElement("falloff_exponent");
       XMLElement* e_constant_att = get_element(e_light, "constant_attenuation");
       XMLElement* e_linear_att = get_element(e_light, "linear_attenuation");
       XMLElement* e_quadratic_att = get_element(e_light, "quadratic_attenuation");
-      if (e_color && e_falloff_deg && e_falloff_exp &&
+      if (e_falloff_deg && e_falloff_exp &&
           e_constant_att && e_linear_att && e_quadratic_att) {
-        string color_string = e_color->GetText();
-        light.spectrum = spectrum_from_string( color_string );
-        light.constant_att = atof(e_falloff_deg->GetText());
-        light.constant_att = atof(e_falloff_exp->GetText());
+        light.falloff_deg = atof(e_falloff_deg->GetText());
+        light.falloff_exp = atof(e_falloff_exp->GetText());
         light.constant_att = atof(e_constant_att->GetText());
-        light.constant_att = atof(e_linear_att->GetText());
-        light.constant_att = atof(e_quadratic_att->GetText());
+        light.linear_att = atof(e_linear_att->GetText());
+        light.quadratic_att = atof(e_quadratic_att->GetText());
       } else {
-        stat("Error: incomplete definition of spot light: " << light.id);
+        stat("Error: Missing falloff, constant, linear, quadratic definitions in spot light: " << light.id);
         exit(EXIT_FAILURE);
       }
     } else {
       stat("Error: Light type " << type << " in light: " << light.id << "is not supported");
       exit(EXIT_FAILURE);
     }
-
   }
 
   // print summary

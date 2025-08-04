@@ -195,8 +195,20 @@ Ray Camera::generate_ray(double x, double y) const {
   // Note: hFov and vFov are in degrees.
   //
 
+  double hFov_rad = radians(hFov);
+  double vFov_rad = radians(vFov);
 
-  return Ray(pos, Vector3D(0, 0, -1));
+  double sensor_x = (2 * x - 1) * tan(hFov_rad / 2);
+  double sensor_y = (2 * y - 1) * tan(vFov_rad / 2);
+  Vector3D camera_direction(sensor_x, sensor_y, -1.0);
+
+  Vector3D world_direction = c2w * camera_direction;
+  world_direction.normalize();
+
+  Ray ray(pos, world_direction);
+  ray.min_t = nClip;
+  ray.max_t = fClip;
+  return ray;
 
 }
 
