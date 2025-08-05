@@ -14,6 +14,7 @@ PathTracer::PathTracer() {
   gridSampler = new UniformGridSampler2D();
   hemisphereSampler = new UniformHemisphereSampler3D();
 
+
   tm_gamma = 2.2f;
   tm_level = 1.0f;
   tm_key = 0.18;
@@ -126,12 +127,12 @@ PathTracer::estimate_direct_lighting_importance(const Ray &r,
       Vector3D Li = light->sample_L(hit_p, &wi_world, &distToLight, &pdf_light);
       if (Li == Vector3D() || pdf_light == 0) continue;
 
-      // Shadow ray
-      Ray shadowRay(hit_p + EPS_F * wi_world, wi_world, EPS_F, distToLight - EPS_F);
-      Intersection sh_isect;
-      if (bvh->intersect(shadowRay, &sh_isect)) {
-        // If we hit something before the light and it is NOT the light itself, skip
-        if (sh_isect.bsdf->get_emission() == Vector3D()) continue;
+      // Shadow ray to check for occlusion
+      Ray shadowRay(hit_p + EPS_F * wi_world, wi_world, distToLight - EPS_F);
+      shadowRay.min_t = EPS_F; // avoid self-intersection
+      if (bvh->has_intersection(shadowRay)) {
+        // If the shadow ray hits anything before reaching the light, the light is occluded
+        continue;
       }
 
       // Convert to local coordinates
@@ -175,10 +176,44 @@ Vector3D PathTracer::at_least_one_bounce_radiance(const Ray &r,
 
   Vector3D L_out(0, 0, 0);
 
-  // TODO: Part 4, Task 2
-  // Returns the one bounce radiance + radiance from extra bounces at this point.
-  // Should be called recursively to simulate extra bounces.
+  // Implementation of recursive path tracing with Russian Roulette termination
+  // Base contribution: direct lighting at this surface (one bounce)
+  if (isAccumBounces || r.depth == 1) {
+    L_out += one_bounce_radiance(r, isect);
+  }
 
+  if (r.depth <= 1) return L_out;
+
+  // Sample BSDF
+  Vector3D wi_local; double pdf;
+  Vector3D f = isect.bsdf->sample_f(w_out, &wi_local, &pdf);
+  if (pdf<=0 || f==Vector3D()) return L_out;
+  double cos_term = abs_cos_theta(wi_local);
+  if (cos_term==0) return L_out;
+
+  // world space
+  Vector3D wi_world = o2w * wi_local;
+
+  // **Disable RR completely**
+  double continuation_prob = 1.0;
+
+  // Spawn next ray with proper t bounds
+  Ray nextRay(hit_p + EPS_F*wi_world, wi_world);
+  nextRay.depth = r.depth - 1;
+  nextRay.min_t = EPS_F;
+  nextRay.max_t = INF_D;
+
+  Intersection next_isect;
+  Vector3D Li;
+  if (bvh->intersect(nextRay, &next_isect)) {
+    Li = at_least_one_bounce_radiance(nextRay, next_isect);
+  } else {
+    Li = envLight ? envLight->sample_dir(nextRay) : Vector3D();
+  }
+
+  // **Always accumulate** every bounce
+  Vector3D indirect = f * Li * cos_term / (pdf * continuation_prob);
+  L_out += indirect;
 
   return L_out;
 }
@@ -197,11 +232,13 @@ Vector3D PathTracer::est_radiance_global_illumination(const Ray &r) {
   //
   // REMOVE THIS LINE when you are ready to begin Part 3.
   
+  if (!bvh->intersect(r, &isect))
+    return envLight ? envLight->sample_dir(r) : L_out;
 
   // zero-bounce emission
-  //L_out = zero_bounce_radiance(r, isect);
-  // direct lighting (importance sampling)
-  L_out += estimate_direct_lighting_importance(r, isect);
+  L_out = zero_bounce_radiance(r, isect);
+  // global illumination with up to max_ray_depth bounces
+  L_out += at_least_one_bounce_radiance(r, isect);
   return L_out;
 }
 
@@ -211,29 +248,51 @@ void PathTracer::raytrace_pixel(size_t x, size_t y) {
   // through the scene. Return the average Vector3D.
   // You should call est_radiance_global_illumination in this function.
 
-  int num_samples = ns_aa;
-  Vector2D origin = Vector2D(x, y); // bottom left corner of the pixel
+  size_t max_spp = ns_aa; // maximum samples per pixel
+  Vector2D origin = Vector2D(x, y);
   double inv_w = 1.0 / sampleBuffer.w;
   double inv_h = 1.0 / sampleBuffer.h;
 
-  Vector3D total_radiance(0, 0, 0);
-  for (int i = 0; i < num_samples; ++i) {
-    Vector2D sample = gridSampler->get_sample(); // in [0,1]^2
-    double normalized_x = (x + sample.x) * inv_w;
-    double normalized_y = (y + sample.y) * inv_h;
+  Vector3D total_radiance(0);
+  double s1 = 0.0; // sum of illuminance
+  double s2 = 0.0; // sum of illuminance squared
+  size_t n = 0;    // samples so far
 
-    Ray ray = camera->generate_ray(normalized_x, normalized_y);
-    Vector3D radiance = est_radiance_global_illumination(ray);
-    total_radiance += radiance;
+  while (n < max_spp) {
+    size_t batch = std::min(samplesPerBatch, max_spp - n);
+    for (size_t i = 0; i < batch; ++i) {
+      Vector2D sample = gridSampler->get_sample();
+      double nx = (x + sample.x) * inv_w;
+      double ny = (y + sample.y) * inv_h;
+
+      Ray ray = camera->generate_ray(nx, ny);
+      ray.depth = max_ray_depth;
+      Vector3D radiance = est_radiance_global_illumination(ray);
+      total_radiance += radiance;
+
+      double illum = radiance.illum();
+      s1 += illum;
+      s2 += illum * illum;
+    }
+    n += batch;
+
+    // adaptive stopping criterion 
+    if (n % samplesPerBatch == 0) {
+      double mu = s1 / n;
+      if (n > 1) {
+        double var = (s2 - (s1 * s1) / n) / (n - 1); // unbiased variance
+        double sigma = sqrt(std::max(var, 0.0));
+        double I = 1.96 * sigma / sqrt((double)n);
+        if (I <= maxTolerance * mu) {
+          break; // pixel has converged
+        }
+      }
+    }
   }
 
-  Vector3D average_radiance = total_radiance / static_cast<double>(num_samples);
-
-  // TODO (Part 5):
-  // Modify your implementation to include adaptive sampling.
-  // Use the command line parameters "samplesPerBatch" and "maxTolerance"
+  Vector3D average_radiance = total_radiance / (double)n;
   sampleBuffer.update_pixel(average_radiance, x, y);
-  sampleCountBuffer[x + y * sampleBuffer.w] = num_samples;
+  sampleCountBuffer[x + y * sampleBuffer.w] = (int)n;
 }
 
 void PathTracer::autofocus(Vector2D loc) {
