@@ -71,7 +71,7 @@ namespace CGL {
         // Integrator sampling settings //
 
         size_t max_ray_depth; ///< maximum allowed ray depth (applies to all rays)
-        size_t isAccumBounces=true; ///< number of bounces to accumulate
+        size_t isAccumBounces=false; ///< number of bounces to accumulate
         size_t ns_aa;         ///< number of camera rays in one pixel (along one axis)
         size_t ns_area_light; ///< number samples per area light source
         size_t ns_diff;       ///< number of samples - diffuse surfaces

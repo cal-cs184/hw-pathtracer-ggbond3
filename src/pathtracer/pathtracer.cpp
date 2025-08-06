@@ -61,8 +61,8 @@ PathTracer::estimate_direct_lighting_hemisphere(const Ray &r,
   make_coord_space(o2w, isect.n);
   Matrix3x3 w2o = o2w.T();
 
-  // w_out points towards the source of the ray (e.g.,
-  // toward the camera if this is a primary ray)
+  // w_out points towards the source of the ray 
+
   const Vector3D hit_p = r.o + r.d * isect.t;
   const Vector3D w_out = w2o * (-r.d);
 
@@ -166,56 +166,42 @@ Vector3D PathTracer::one_bounce_radiance(const Ray &r,
 }
 
 Vector3D PathTracer::at_least_one_bounce_radiance(const Ray &r,
-                                                  const Intersection &isect) {
-  Matrix3x3 o2w;
-  make_coord_space(o2w, isect.n);
-  Matrix3x3 w2o = o2w.T();
-
-  Vector3D hit_p = r.o + r.d * isect.t;
-  Vector3D w_out = w2o * (-r.d);
-
-  Vector3D L_out(0, 0, 0);
-
-  // Implementation of recursive path tracing with Russian Roulette termination
-  // Base contribution: direct lighting at this surface (one bounce)
-  if (isAccumBounces || r.depth == 1) {
-    L_out += one_bounce_radiance(r, isect);
-  }
-
-  if (r.depth <= 1) return L_out;
-
-  // Sample BSDF
-  Vector3D wi_local; double pdf;
-  Vector3D f = isect.bsdf->sample_f(w_out, &wi_local, &pdf);
-  if (pdf<=0 || f==Vector3D()) return L_out;
-  double cos_term = abs_cos_theta(wi_local);
-  if (cos_term==0) return L_out;
-
-  // world space
-  Vector3D wi_world = o2w * wi_local;
-
-  // **Disable RR completely**
-  double continuation_prob = 1.0;
-
-  // Spawn next ray with proper t bounds
-  Ray nextRay(hit_p + EPS_F*wi_world, wi_world);
-  nextRay.depth = r.depth - 1;
-  nextRay.min_t = EPS_F;
-  nextRay.max_t = INF_D;
-
-  Intersection next_isect;
-  Vector3D Li;
-  if (bvh->intersect(nextRay, &next_isect)) {
-    Li = at_least_one_bounce_radiance(nextRay, next_isect);
-  } else {
-    Li = envLight ? envLight->sample_dir(nextRay) : Vector3D();
-  }
-
-  // **Always accumulate** every bounce
-  Vector3D indirect = f * Li * cos_term / (pdf * continuation_prob);
-  L_out += indirect;
-
-  return L_out;
+  const Intersection &isect) {
+    Matrix3x3 o2w;
+    make_coord_space(o2w, isect.n);
+    Matrix3x3 w2o = o2w.T();
+    Vector3D hit_p = r.o + r.d * isect.t;
+    Vector3D w_out = w2o * (-r.d);
+  
+    Vector3D L_out(0);
+    if (isAccumBounces || r.depth == 1) {
+      L_out += one_bounce_radiance(r, isect);
+    }
+    if (r.depth <= 1) return L_out;
+  
+    Vector3D wi_local;
+    double pdf;
+    Vector3D f = isect.bsdf->sample_f(w_out, &wi_local, &pdf);
+    if (pdf <= 0 || f == Vector3D()) return L_out;
+    double cos_theta = abs_cos_theta(wi_local);
+    if (cos_theta == 0) return L_out;
+    Vector3D wi_world = o2w * wi_local;
+  
+    Ray nextRay(hit_p + EPS_F * wi_world, wi_world);
+    nextRay.depth = r.depth - 1;
+    nextRay.min_t = EPS_F;
+    nextRay.max_t = INF_D;
+  
+    Intersection next_isect;
+    Vector3D Li;
+    if (bvh->intersect(nextRay, &next_isect))
+      Li = at_least_one_bounce_radiance(nextRay, next_isect);
+    else
+      Li = envLight ? envLight->sample_dir(nextRay) : Vector3D();
+  
+    Vector3D indirect = f * Li * cos_theta / pdf;
+    L_out += indirect;
+    return L_out;
 }
 
 Vector3D PathTracer::est_radiance_global_illumination(const Ray &r) {
